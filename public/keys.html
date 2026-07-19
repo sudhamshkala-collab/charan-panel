@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Charan Panel — Keys</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <nav class="navbar">
+    <span class="navbar-logo">CHARAN PANEL</span>
+    <ul class="navbar-links">
+      <li><a href="dashboard.html">Dashboard</a></li>
+      <li><a href="generate.html">Generate</a></li>
+      <li><a href="keys.html" class="active">Keys</a></li>
+      <li><a href="#" class="logout" id="logoutBtn">Logout</a></li>
+    </ul>
+  </nav>
+
+  <div class="container">
+    <h1 class="page-title">Manage Keys</h1>
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>Key</th>
+            <th>Game</th>
+            <th>Devices</th>
+            <th>Expiry</th>
+            <th>Status</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="keysBody">
+          <tr><td colspan="6" class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script type="module">
+    import { db } from "./js/firebase-config.js";
+    import {
+      collection,
+      getDocs,
+      doc,
+      updateDoc,
+      deleteDoc,
+    } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+    if (localStorage.getItem("logged_in") !== "true") {
+      window.location.href = "index.html";
+    }
+
+    document.getElementById("logoutBtn").addEventListener("click", (e) => {
+      e.preventDefault();
+      localStorage.removeItem("logged_in");
+      window.location.href = "index.html";
+    });
+
+    async function loadKeys() {
+      try {
+        const keysSnap = await getDocs(collection(db, "keys"));
+        const devicesSnap = await getDocs(collection(db, "devices"));
+
+        const deviceCounts = {};
+        const deviceKeyMap = {};
+        devicesSnap.forEach((d) => {
+          const data = d.data();
+          const kid = data.key_id;
+          if (!deviceCounts[kid]) {
+            deviceCounts[kid] = 0;
+            deviceKeyMap[kid] = d.id;
+          }
+          deviceCounts[kid]++;
+        });
+
+        const tbody = document.getElementById("keysBody");
+        const rows = [];
+
+        keysSnap.forEach((keyDoc) => {
+          const k = keyDoc.data();
+          const kid = keyDoc.id;
+          const now = Date.now();
+
+          let statusBadge = '<span class="badge badge-active">Active</span>';
+          if (!k.status) {
+            statusBadge = '<span class="badge badge-banned">Banned</span>';
+          } else if (k.expired_date && now > k.expired_date) {
+            statusBadge = '<span class="badge badge-expired">Expired</span>';
+          }
+
+          const expiryStr = k.expired_date
+            ? new Date(k.expired_date).toLocaleDateString()
+            : "—";
+
+          const deviceCount = k.device_count || deviceCounts[kid] || 0;
+
+          const banLabel = k.status ? "Ban" : "Unban";
+          const banClass = k.status ? "btn-warning" : "btn-success";
+
+          rows.push({
+            key: k.user_key,
+            game: k.game || "—",
+            devices: `${deviceCount} / ${k.max_devices}`,
+            expiry: expiryStr,
+            status: statusBadge,
+            actions: `
+              <div class="action-btns">
+                <button class="btn btn-small ${banClass}" data-id="${kid}" data-status="${k.status}" onclick="toggleBan(this)">${banLabel}</button>
+                <button class="btn btn-small btn-danger" data-id="${kid}" onclick="deleteKey(this)">Delete</button>
+              </div>
+            `,
+            created_at: k.created_at || 0,
+          });
+        });
+
+        rows.sort((a, b) => b.created_at - a.created_at);
+
+        if (rows.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No keys found</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = rows.map((r) => `
+          <tr>
+            <td style="font-family:monospace;letter-spacing:1px;">${r.key}</td>
+            <td>${r.game}</td>
+            <td>${r.devices}</td>
+            <td>${r.expiry}</td>
+            <td>${r.status}</td>
+            <td>${r.actions}</td>
+          </tr>
+        `).join("");
+      } catch (err) {
+        console.error("Load keys error:", err);
+      }
+    }
+
+    window.toggleBan = async function (btn) {
+      const id = btn.getAttribute("data-id");
+      const currentStatus = btn.getAttribute("data-status") === "true";
+      try {
+        await updateDoc(doc(db, "keys", id), { status: !currentStatus });
+        loadKeys();
+      } catch (err) {
+        console.error("Toggle ban error:", err);
+      }
+    };
+
+    window.deleteKey = async function (btn) {
+      const id = btn.getAttribute("data-id");
+      if (!confirm("Delete this key permanently?")) return;
+      try {
+        await deleteDoc(doc(db, "keys", id));
+        loadKeys();
+      } catch (err) {
+        console.error("Delete key error:", err);
+      }
+    };
+
+    loadKeys();
+  </script>
+</body>
+</html>

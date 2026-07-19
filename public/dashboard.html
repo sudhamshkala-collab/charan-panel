@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Charan Panel — Dashboard</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <nav class="navbar">
+    <span class="navbar-logo">CHARAN PANEL</span>
+    <ul class="navbar-links">
+      <li><a href="dashboard.html" class="active">Dashboard</a></li>
+      <li><a href="generate.html">Generate</a></li>
+      <li><a href="keys.html">Keys</a></li>
+      <li><a href="#" class="logout" id="logoutBtn">Logout</a></li>
+    </ul>
+  </nav>
+
+  <div class="container">
+    <h1 class="page-title">Dashboard</h1>
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-value" id="totalKeys">0</div>
+        <div class="stat-label">Total Keys</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="activeKeys">0</div>
+        <div class="stat-label">Active Keys</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="totalDevices">0</div>
+        <div class="stat-label">Total Devices</div>
+      </div>
+    </div>
+
+    <h2 class="section-title">Recent Keys</h2>
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>Key</th>
+            <th>Game</th>
+            <th>Devices</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="recentKeysBody">
+          <tr><td colspan="4" class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script type="module">
+    import { db } from "./js/firebase-config.js";
+    import { collection, getDocs, query, orderBy, limit } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+    if (localStorage.getItem("logged_in") !== "true") {
+      window.location.href = "index.html";
+    }
+
+    document.getElementById("logoutBtn").addEventListener("click", (e) => {
+      e.preventDefault();
+      localStorage.removeItem("logged_in");
+      window.location.href = "index.html";
+    });
+
+    async function loadDashboard() {
+      try {
+        const keysSnap = await getDocs(collection(db, "keys"));
+        const devicesSnap = await getDocs(collection(db, "devices"));
+
+        let totalKeys = 0;
+        let activeKeys = 0;
+        const allKeys = [];
+
+        keysSnap.forEach((doc) => {
+          const data = doc.data();
+          totalKeys++;
+          if (data.status) activeKeys++;
+          allKeys.push({ id: doc.id, ...data });
+        });
+
+        document.getElementById("totalKeys").textContent = totalKeys;
+        document.getElementById("activeKeys").textContent = activeKeys;
+        document.getElementById("totalDevices").textContent = devicesSnap.size;
+
+        allKeys.sort((a, b) => {
+          const ta = a.created_at || 0;
+          const tb = b.created_at || 0;
+          return tb - ta;
+        });
+
+        const recent = allKeys.slice(0, 5);
+        const tbody = document.getElementById("recentKeysBody");
+
+        if (recent.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No keys yet</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = recent.map((k) => {
+          const now = Date.now();
+          let statusBadge = '<span class="badge badge-active">Active</span>';
+          if (!k.status) {
+            statusBadge = '<span class="badge badge-banned">Banned</span>';
+          } else if (k.expired_date && now > k.expired_date) {
+            statusBadge = '<span class="badge badge-expired">Expired</span>';
+          }
+          return `<tr>
+            <td style="font-family:monospace;letter-spacing:1px;">${k.user_key}</td>
+            <td>${k.game || "—"}</td>
+            <td>${k.device_count || 0}</td>
+            <td>${statusBadge}</td>
+          </tr>`;
+        }).join("");
+      } catch (err) {
+        console.error("Dashboard error:", err);
+      }
+    }
+
+    loadDashboard();
+  </script>
+</body>
+</html>

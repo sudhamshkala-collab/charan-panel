@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Charan Panel — Login</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="login-wrapper">
+    <div class="login-card">
+      <h1>Charan Panel</h1>
+      <p class="subtitle">Owner Login</p>
+      <div id="error" class="alert alert-error" style="display:none;"></div>
+      <form id="loginForm">
+        <div class="form-group">
+          <label for="username">Username</label>
+          <input type="text" id="username" placeholder="Enter username" required />
+        </div>
+        <div class="form-group">
+          <label for="password">Password</label>
+          <input type="password" id="password" placeholder="Enter password" required />
+        </div>
+        <button type="submit" class="btn btn-accent" style="margin-top:0.5rem;">Login</button>
+      </form>
+    </div>
+  </div>
+  <script>
+    if (localStorage.getItem("logged_in") === "true") {
+      window.location.href = "dashboard.html";
+    }
+    document.getElementById("loginForm").addEventListener("submit", function (e) {
+      e.preventDefault();
+      const u = document.getElementById("username").value.trim();
+      const p = document.getElementById("password").value;
+      const errEl = document.getElementById("error");
+      if (u === "CHARANYT" && p === "Charan@123") {
+        localStorage.setItem("logged_in", "true");
+        window.location.href = "dashboard.html";
+      } else {
+        errEl.textContent = "Invalid username or password";
+        errEl.style.display = "block";
+      }
+    });
+  </script>
+</body>
+</html>
