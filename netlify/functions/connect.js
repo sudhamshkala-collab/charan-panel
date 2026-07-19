@@ -1,22 +1,235 @@
-const admin = require("firebase-admin");
+const https = require("https");
 
-if (!admin.apps.length) {
-  try {
-    const raw = (process.env.FIREBASE_SERVICE_ACCOUNT || "").replace(/[\r\n\t]/g, " ").trim();
-    admin.initializeApp({
-      credential: admin.credential.cert(JSON.parse(raw)),
-    });
-  } catch (e) {
-    console.error("Firebase init failed:", e.message);
-  }
-}
-
-const db = admin.firestore();
+const FIREBASE_PROJECT = "jeedimetla-charan";
+const FIREBASE_API_KEY = ""; 
 const SECRET = "Vm8Lk7Uj2JmsjCPVPVjrLa7zgfx3uz9E";
+
+let accessToken = null;
+let tokenExpiry = 0;
 
 function md5(str) {
   const crypto = require("crypto");
   return crypto.createHash("md5").update(str).digest("hex");
+}
+
+function getAccessToken() {
+  return new Promise((resolve, reject) => {
+    if (accessToken && Date.now() < tokenExpiry) {
+      return resolve(accessToken);
+    }
+    
+    let sa;
+    try {
+      sa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || "{}");
+    } catch (e) {
+      return reject(new Error("Invalid service account: " + e.message));
+    }
+    
+    if (!sa.client_email || !sa.private_key) {
+      return reject(new Error("Missing client_email or private_key"));
+    }
+    
+    const now = Math.floor(Date.now() / 1000);
+    const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url");
+    const payload = Buffer.from(JSON.stringify({
+      iss: sa.client_email,
+      scope: "https://www.googleapis.com/auth/datastore",
+      aud: "https://oauth2.googleapis.com/token",
+      exp: now + 3600,
+      iat: now,
+    })).toString("base64url");
+    
+    const unsignedJwt = header + "." + payload;
+    const sign = crypto.sign("RSA-SHA256", Buffer.from(unsignedJwt), sa.private_key);
+    const jwt = unsignedJwt + "." + sign.toString("base64url");
+    
+    const postData = "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=" + jwt;
+    
+    const req = https.request({
+      hostname: "oauth2.googleapis.com",
+      path: "/token",
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    }, (res) => {
+      let data = "";
+      res.on("data", (c) => data += c);
+      res.on("end", () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.access_token) {
+            accessToken = parsed.access_token;
+            tokenExpiry = Date.now() + (parsed.expires_in - 60) * 1000;
+            resolve(accessToken);
+          } else {
+            reject(new Error("Token error: " + data));
+          }
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+    
+    req.on("error", reject);
+    req.write(postData);
+    req.end();
+  });
+}
+
+function firestoreQuery(collection, field, value) {
+  return new Promise(async (resolve, reject) => {
+    try {
+      const token = await getAccessToken();
+      const url = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT}/databases/(default)/documents/${collection}?orderBy=${field}&limit=1&key=`;
+      
+      const filter = {
+        structuredQuery: {
+          from: [{ collectionId: collection }],
+          where: {
+            fieldFilter: {
+              field: { fieldPath: field },
+              op: "EQUAL",
+              value: { stringValue: value },
+            },
+          },
+          limit: 1,
+        },
+      };
+      
+      const apiUrl = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT}/databases/(default)/documents:runQuery`;
+      const postData = JSON.stringify(filter);
+      
+      const req = https.request({
+        hostname: "firestore.googleapis.com",
+        path: `/v1/projects/${FIREBASE_PROJECT}/databases/(default)/documents:runQuery`,
+        method: "POST",
+        headers: {
+          "Authorization": "Bearer " + token,
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(postData),
+        },
+      }, (res) => {
+        let data = "";
+        res.on("data", (c) => data += c);
+        res.on("end", () => {
+          try {
+            const results = JSON.parse(data);
+            const docs = results.filter(r => r.document);
+            resolve(docs.map(d => ({
+              id: d.document.name.split("/").pop(),
+              data: flattenDoc(d.document.fields),
+            })));
+          } catch (e) {
+            reject(e);
+          }
+        });
+      });
+      
+      req.on("error", reject);
+      req.write(postData);
+      req.end();
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+function firestoreAdd(collection, fields) {
+  return new Promise(async (resolve, reject) => {
+    try {
+      const token = await getAccessToken();
+      const firestoreFields = {};
+      for (const [k, v] of Object.entries(fields)) {
+        if (typeof v === "number") {
+          firestoreFields[k] = { integerValue: v };
+        } else {
+          firestoreFields[k] = { stringValue: String(v) };
+        }
+      }
+      
+      const postData = JSON.stringify({ fields: firestoreFields });
+      
+      const req = https.request({
+        hostname: "firestore.googleapis.com",
+        path: `/v1/projects/${FIREBASE_PROJECT}/databases/(default)/documents/${collection}`,
+        method: "POST",
+        headers: {
+          "Authorization": "Bearer " + token,
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(postData),
+        },
+      }, (res) => {
+        let data = "";
+        res.on("data", (c) => data += c);
+        res.on("end", () => {
+          try {
+            const doc = JSON.parse(data);
+            resolve(doc.name.split("/").pop());
+          } catch (e) {
+            reject(e);
+          }
+        });
+      });
+      
+      req.on("error", reject);
+      req.write(postData);
+      req.end();
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+function firestoreUpdate(projectId, docPath, fields) {
+  return new Promise(async (resolve, reject) => {
+    try {
+      const token = await getAccessToken();
+      const firestoreFields = {};
+      for (const [k, v] of Object.entries(fields)) {
+        if (typeof v === "number") {
+          firestoreFields[k] = { integerValue: v };
+        } else {
+          firestoreFields[k] = { stringValue: String(v) };
+        }
+      }
+      
+      const postData = JSON.stringify({ fields: firestoreFields });
+      const updateMask = Object.keys(fields).map(f => "updateMask.fieldPaths=" + f).join("&");
+      
+      const req = https.request({
+        hostname: "firestore.googleapis.com",
+        path: `/v1/projects/${FIREBASE_PROJECT}/databases/(default)/documents/${docPath}?${updateMask}`,
+        method: "PATCH",
+        headers: {
+          "Authorization": "Bearer " + token,
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(postData),
+        },
+      }, (res) => {
+        let data = "";
+        res.on("data", (c) => data += c);
+        res.on("end", () => resolve());
+      });
+      
+      req.on("error", reject);
+      req.write(postData);
+      req.end();
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+function flattenDoc(fields) {
+  const result = {};
+  for (const [k, v] of Object.entries(fields || {})) {
+    if (v.stringValue !== undefined) result[k] = v.stringValue;
+    else if (v.integerValue !== undefined) result[k] = parseInt(v.integerValue);
+    else if (v.doubleValue !== undefined) result[k] = v.doubleValue;
+    else if (v.booleanValue !== undefined) result[k] = v.booleanValue;
+    else if (v.timestampValue !== undefined) result[k] = new Date(v.timestampValue).getTime();
+    else result[k] = JSON.stringify(v);
+  }
+  return result;
 }
 
 const corsHeaders = {
@@ -40,20 +253,13 @@ exports.handler = async (event) => {
   }
 
   try {
-    if (!db) {
-      return {
-        statusCode: 200,
-        headers: corsHeaders,
-        body: JSON.stringify({ status: false, reason: "Database not connected" }),
-      };
-    }
-
     let game, user_key, serial;
-    const contentType = (event.headers["content-type"] || "").toLowerCase();
     const rawBody = (event.body || "").replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
 
-    if (contentType.includes("application/json")) {
-      const parsed = JSON.parse(rawBody || "{}");
+    let parsed = null;
+    try { parsed = JSON.parse(rawBody || "{}"); } catch (e) { parsed = null; }
+
+    if (parsed && typeof parsed === "object" && parsed.game !== undefined) {
       game = parsed.game;
       user_key = parsed.user_key;
       serial = parsed.serial;
@@ -68,13 +274,13 @@ exports.handler = async (event) => {
       return {
         statusCode: 200,
         headers: corsHeaders,
-        body: JSON.stringify({ status: false, reason: "Missing required fields: game, user_key, serial" }),
+        body: JSON.stringify({ status: false, reason: "Missing required fields" }),
       };
     }
 
-    const keysSnapshot = await db.collection("keys").where("user_key", "==", user_key).limit(1).get();
+    const keys = await firestoreQuery("keys", "user_key", user_key);
 
-    if (keysSnapshot.empty) {
+    if (keys.length === 0) {
       return {
         statusCode: 200,
         headers: corsHeaders,
@@ -82,11 +288,10 @@ exports.handler = async (event) => {
       };
     }
 
-    const keyDoc = keysSnapshot.docs[0];
-    const keyData = keyDoc.data();
-    const keyId = keyDoc.id;
+    const keyData = keys[0].data;
+    const keyId = keys[0].id;
 
-    if (keyData.status === false) {
+    if (keyData.status === false || keyData.status === "false") {
       return {
         statusCode: 200,
         headers: corsHeaders,
@@ -103,12 +308,12 @@ exports.handler = async (event) => {
       };
     }
 
-    const devicesSnapshot = await db.collection("devices").where("key_id", "==", keyId).get();
-    const existingDevices = devicesSnapshot.docs;
-    const deviceExists = existingDevices.some((doc) => doc.data().serial === serial);
+    const devices = await firestoreQuery("devices", "key_id", keyId);
+    const deviceExists = devices.some((d) => d.data.serial === serial);
 
     if (!deviceExists) {
-      if (existingDevices.length >= (keyData.max_devices || 3)) {
+      const maxDevices = keyData.max_devices || 3;
+      if (devices.length >= maxDevices) {
         return {
           statusCode: 200,
           headers: corsHeaders,
@@ -116,39 +321,35 @@ exports.handler = async (event) => {
         };
       }
 
-      await db.collection("devices").add({
+      await firestoreAdd("devices", {
         key_id: keyId,
         serial: serial,
         created_at: now,
       });
 
-      await db.collection("keys").doc(keyId).update({
-        device_count: existingDevices.length + 1,
+      await firestoreUpdate(FIREBASE_PROJECT, `documents/keys/${keyId}`, {
+        device_count: devices.length + 1,
       });
     }
 
     const token = md5(`${game}-${user_key}-${serial}-${SECRET}`);
 
-    const expStr = keyData.expired_date
-      ? new Date(keyData.expired_date).toISOString()
-      : "never";
-
-    const responseBody = JSON.stringify({
-      status: true,
-      data: {
-        token: token,
-        rng: now,
-        EXP: expStr,
-      },
-    });
-
     return {
       statusCode: 200,
       headers: corsHeaders,
-      body: responseBody,
+      body: JSON.stringify({
+        status: true,
+        data: {
+          token: token,
+          rng: now,
+          EXP: keyData.expired_date
+            ? new Date(keyData.expired_date).toISOString()
+            : "never",
+        },
+      }),
     };
   } catch (err) {
-    const safeMsg = (err.message || "Unknown error").replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
+    const safeMsg = (err.message || "Unknown error").replace(/[\x00-\x1F]/g, " ");
     return {
       statusCode: 200,
       headers: corsHeaders,
