@@ -35,7 +35,20 @@ exports.handler = async (event) => {
   }
 
   try {
-    const { game, user_key, serial } = JSON.parse(event.body || "{}");
+    let game, user_key, serial;
+    const contentType = (event.headers["content-type"] || "").toLowerCase();
+
+    if (contentType.includes("application/json")) {
+      const parsed = JSON.parse(event.body || "{}");
+      game = parsed.game;
+      user_key = parsed.user_key;
+      serial = parsed.serial;
+    } else {
+      const params = new URLSearchParams(event.body || "");
+      game = params.get("game");
+      user_key = params.get("user_key");
+      serial = params.get("serial");
+    }
 
     if (!game || !user_key || !serial) {
       return {
