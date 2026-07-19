@@ -1,14 +1,14 @@
 const https = require("https");
+const crypto = require("crypto");
 
 const FIREBASE_PROJECT = "jeedimetla-charan";
-const FIREBASE_API_KEY = ""; 
+const FIREBASE_API_KEY = "";
 const SECRET = "Vm8Lk7Uj2JmsjCPVPVjrLa7zgfx3uz9E";
 
 let accessToken = null;
 let tokenExpiry = 0;
 
 function md5(str) {
-  const crypto = require("crypto");
   return crypto.createHash("md5").update(str).digest("hex");
 }
 
